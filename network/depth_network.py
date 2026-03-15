@@ -17,10 +17,19 @@ class DepthNetwork(nn.Module):
         super(DepthNetwork, self).__init__()
         self.read_config(cfg)
         
+        if self.use_pose_cond and self.novel_view_mode == 'SF':
+            C = self.fusion_feat_in_dim
+            hidden = max(64, C)
+            self.pose_mlp = nn.Sequential(
+                nn.Linear(12, hidden),
+                nn.ReLU(inplace=True),
+                nn.Linear(hidden, 2 * C)
+            )
         # feature encoder        
         # resnet feat: 64(1/2), 64(1/4), 128(1/8), 256(1/16), 512(1/32)        
         self.encoder = ResnetEncoder(self.num_layers, self.weights_init, 1) # number of layers, pretrained, number of input images
-        del self.encoder.encoder.fc # del fc in weights_init
+        if hasattr(self.encoder, 'encoder') and hasattr(self.encoder.encoder, 'fc'):
+            del self.encoder.encoder.fc # del fc in weights_init
         enc_feat_dim = sum(self.encoder.num_ch_enc[self.fusion_level:]) 
         self.conv1x1 = conv2d(enc_feat_dim, self.fusion_feat_in_dim, kernel_size=1, padding_mode = 'reflect') 
 
@@ -88,6 +97,26 @@ class DepthNetwork(nn.Module):
             packed_feats_agg_next = self.conv1x1(torch.cat(packed_feats_next_list, dim=1))
 
         feats_agg = unpack_cam_feat(packed_feats_agg, self.batch_size, self.num_cams) 
+        
+        if self.use_pose_cond and self.novel_view_mode == 'SF':
+            C = self.fusion_feat_in_dim
+            ext = inputs['extrinsics']           # [B, V, 4, 4]
+            ext_inv = inputs['extrinsics_inv']   # [B, V, 4, 4]
+            B, V, _, _ = ext.shape
+            ref_ext = ext[:, 0, ...]                          # [B, 4, 4]
+            ref_ext_b = ref_ext.unsqueeze(1).expand(-1, V, -1, -1)  # [B, V, 4, 4]
+            rel_all = torch.matmul(ext_inv, ref_ext_b)        # [B, V, 4, 4]
+            pose_vec = rel_all[:, :, :3, :4].reshape(B * V, 12)  # [B*V, 12]
+            pose_feat = self.pose_mlp(pose_vec)               # [B*V, 2*C]
+            pose_feat = pose_feat.view(B, V, 2*C)
+            gamma, beta = pose_feat.split(C, dim=2)           # [B, V, C] each
+            device = feats_agg.device
+            dtype = feats_agg.dtype
+            gamma = (1.0 + 0.01 * gamma).unsqueeze(-1).unsqueeze(-1).to(device=device, dtype=dtype)  # [B, V, C, 1, 1]
+            beta = beta.unsqueeze(-1).unsqueeze(-1).to(device=device, dtype=dtype)
+            feats_agg = feats_agg * gamma + beta
+
+        
         if self.novel_view_mode == 'MF':
             feats_agg_last = unpack_cam_feat(packed_feats_agg_last, self.batch_size, self.num_cams)
             feats_agg_next = unpack_cam_feat(packed_feats_agg_next, self.batch_size, self.num_cams)

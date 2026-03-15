@@ -5,7 +5,8 @@ ddp:
   
 model:
   # mode: 'MF' or 'SF'
-  novel_view_mode: 'MF'
+  novel_view_mode: 'SF'
+  use_pose_cond: True
 
   num_layers: 18
   weights_init: True
@@ -23,7 +24,7 @@ model:
   proj_d_end: 50
 
 data:
-  data_path: './input_data/nuscenes/'
+  data_path: '/mnt/data/junhaow/nuScenes_oringin/trainval/'
   log_dir: './results/'
   dataset: 'nuscenes'
   back_context: 1
@@ -36,16 +37,16 @@ data:
 
 training:
   # basic
-  height: 352
-  width: 640
+  height: 128
+  width: 256
   scales: [0] 
   frame_ids: [0, -1, 1]
   
   # optimization
   batch_size: 1
-  num_workers: 4
+  num_workers: 1
   learning_rate: 0.0001
-  num_epochs: 10
+  num_epochs: 2
   scheduler_step_size: 15
 
   # model / loss setting
@@ -79,14 +80,14 @@ eval:
   eval_num_workers: 4
   eval_min_depth: 0
   eval_max_depth: 80
-  eval_visualize: False
-  save_images: False
+  eval_visualize: True
+  save_images: True
   save_path: './results/images'
   
 load:
-  pretrain: False
+  pretrain: True
   models_to_load: ['depth_net', 'gs_net']
-  load_dir: path to weights directory
+  load_dir: ./model_weight/weights_SF
   
 logging:
   early_phase: 5000

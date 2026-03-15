@@ -59,6 +59,20 @@ class BaseModel:
         optim_file_path = os.path.join(curr_model_weights_dir, f'{_OPTIMIZER_NAME}.pth')
         torch.save(self.optimizer.state_dict(), optim_file_path)
 
+    def named_parameters(self, prefix: str = '', recurse: bool = True):
+        """
+        Delegate named_parameters to underlying module dict `self.models`.
+        Yields parameter names prefixed by the model key, e.g. 'depth_net.conv.weight'.
+        """
+        if not self.models:
+            return iter(())
+        def gen():
+            for model_name, module in self.models.items():
+                if hasattr(module, 'named_parameters'):
+                    for n, p in module.named_parameters(recurse=recurse):
+                        yield f"{model_name}.{n}", p
+        return gen()
+
     def load_weights(self):
         assert os.path.isdir(self.load_weights_dir), f'\tCannot find {self.load_weights_dir}'
         print(f'Loading a model from {self.load_weights_dir}')

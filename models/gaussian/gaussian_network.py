@@ -97,7 +97,7 @@ class GaussianNetwork(nn.Module):
         rot_out = torch.nn.functional.normalize(rot_out, dim=1)
 
         # scale head
-        scale_out = torch.clamp_max(self.scale_head(out), 0.01)
+        scale_out = torch.clamp_max(self.scale_head(out), 0.05)
 
         # opacity head
         opacity_out = self.opacity_head(out)

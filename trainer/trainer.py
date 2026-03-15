@@ -104,6 +104,11 @@ class DrivingForwardTrainer:
             self.step += 1
             pbar.update(1)
 
+            # for n, p in model.named_parameters():
+            #     if 'pose_mlp' in n:
+            #         print(n, p.grad is None, p.grad.abs().mean().item() if p.grad is not None else None)
+            #     if 'encoder' in n:
+            #         print(n, p.grad is None, p.grad.abs().mean().item() if p.grad is not None else None)
         pbar.close()
         model.lr_scheduler.step()
         
