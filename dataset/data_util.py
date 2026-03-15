@@ -61,23 +61,28 @@ def align_dataset(sample, scales, contexts):
 
     # augment images and intrinsics in accordance with scales 
     for scale in scales:
-        scaled_K = resized_K.copy()
-        scaled_K[:,:2,:] /= (2**scale)
+        scale_int = int(scale)
         
-        sample[('K', scale)] = scaled_K.copy()
-        sample[('inv_K', scale)]= np.linalg.pinv(scaled_K).copy()
+        scaled_K = resized_K.copy()
+        scaled_K[:,:2,:] /= (2**scale_int)  # 使用转换后的int计算
+        
+        sample[('K', scale_int)] = scaled_K.copy()  # 可选：统一key为int类型
+        sample[('inv_K', scale_int)]= np.linalg.pinv(scaled_K).copy()
 
+        # 核心修复2：将尺寸计算结果转为Python原生int，确保size参数类型正确
+        target_size = (int(w // (2**scale_int)), int(h // (2**scale_int)))
+        
         resized_org = F.interpolate(org_images, 
-                                          size=(w//(2**scale),h//(2**scale)),
+                                          size=target_size,  # 使用转换后的尺寸元组
                                           mode = 'bilinear',
                                           align_corners=False)
         resized_aug = F.interpolate(aug_images, 
-                                          size=(w//(2**scale),h//(2**scale)), 
+                                          size=target_size,  # 统一使用转换后的尺寸
                                           mode = 'bilinear',
                                           align_corners=False)            
             
-        sample[('color', 0, scale)] = resized_org
-        sample[('color_aug', 0, scale)] = resized_aug
+        sample[('color', 0, scale_int)] = resized_org
+        sample[('color_aug', 0, scale_int)] = resized_aug
 
     # for context data
     for idx, frame in enumerate(contexts):

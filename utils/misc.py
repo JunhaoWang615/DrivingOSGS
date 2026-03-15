@@ -3,6 +3,7 @@ import yaml
 from collections import defaultdict
  
 import torch
+from datetime import datetime
 
 _NUSC_CAM_LIST = ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT', 'CAM_BACK']
 _REL_CAM_DICT = {0: [1,2], 1: [0,3], 2: [0,4], 3: [1,5], 4: [2,5], 5: [3,4]}
@@ -47,7 +48,11 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF'):
         cfg_name = os.path.splitext(os.path.basename(config))[0]
         print('Experiment: ', cfg_name)
 
-        _log_path = os.path.join(cfg['data']['log_dir'], cfg_name)
+        time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        if mode == 'train':
+            _log_path = os.path.join(cfg['data']['log_dir'], cfg_name, time_str)
+        else:
+            _log_path = os.path.join(cfg['data']['log_dir'], cfg_name, "test")
         cfg['data']['log_path'] = _log_path
         cfg['data']['save_weights_root'] = os.path.join(_log_path, 'models')
         cfg['data']['num_cams'] = len(cfg['data']['cameras'])
@@ -57,6 +62,9 @@ def get_config(config, mode='train', weight_path='./', novel_view_mode='MF'):
         cfg['model']['novel_view_mode'] = novel_view_mode
 
         cfg['load']['load_weights_dir'] = weight_path
+
+        cfg['eval']['save_path'] = os.path.join(cfg['eval']['save_path'], weight_path.replace('/', '_'))
+        
             
         if mode == 'eval':
             cfg['ddp']['world_size'] = 1
