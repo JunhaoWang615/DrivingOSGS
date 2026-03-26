@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from .blocks import upsample, conv2d, pack_cam_feat, unpack_cam_feat
 from .volumetric_fusionnet import VFNet
+from .pose_geometry_condition import PoseGeometricConditionEncoder
 
 from external.layers import ResnetEncoder
 
@@ -18,12 +19,11 @@ class DepthNetwork(nn.Module):
         self.read_config(cfg)
         
         if self.use_pose_cond and self.novel_view_mode == 'SF':
-            C = self.fusion_feat_in_dim
-            hidden = max(64, C)
-            self.pose_mlp = nn.Sequential(
-                nn.Linear(12, hidden),
-                nn.ReLU(inplace=True),
-                nn.Linear(hidden, 2 * C)
+            self.pose_geom_encoder = PoseGeometricConditionEncoder(
+                feat_dim=self.fusion_feat_in_dim,
+                image_height=128,
+                image_width=256,
+                num_freqs=6
             )
         # feature encoder        
         # resnet feat: 64(1/2), 64(1/4), 128(1/8), 256(1/16), 512(1/32)        
@@ -99,24 +99,16 @@ class DepthNetwork(nn.Module):
         feats_agg = unpack_cam_feat(packed_feats_agg, self.batch_size, self.num_cams) 
         
         if self.use_pose_cond and self.novel_view_mode == 'SF':
-            C = self.fusion_feat_in_dim
-            ext = inputs['extrinsics']           # [B, V, 4, 4]
-            ext_inv = inputs['extrinsics_inv']   # [B, V, 4, 4]
-            B, V, _, _ = ext.shape
-            ref_ext = ext[:, 0, ...]                          # [B, 4, 4]
-            ref_ext_b = ref_ext.unsqueeze(1).expand(-1, V, -1, -1)  # [B, V, 4, 4]
-            rel_all = torch.matmul(ext_inv, ref_ext_b)        # [B, V, 4, 4]
-            pose_vec = rel_all[:, :, :3, :4].reshape(B * V, 12)  # [B*V, 12]
-            pose_feat = self.pose_mlp(pose_vec)               # [B*V, 2*C]
-            pose_feat = pose_feat.view(B, V, 2*C)
-            gamma, beta = pose_feat.split(C, dim=2)           # [B, V, C] each
-            device = feats_agg.device
-            dtype = feats_agg.dtype
-            gamma = (1.0 + 0.01 * gamma).unsqueeze(-1).unsqueeze(-1).to(device=device, dtype=dtype)  # [B, V, C, 1, 1]
-            beta = beta.unsqueeze(-1).unsqueeze(-1).to(device=device, dtype=dtype)
-            feats_agg = feats_agg * gamma + beta
-
-        
+            ext = inputs['extrinsics']  # [B, N, 4, 4], world-to-camera
+            R = ext[:, :, :3, :3]       # [B, N, 3, 3]
+            t = ext[:, :, :3, 3]        # [B, N, 3]
+            K = inputs[('K', 0)][:, :, :3, :3] if inputs[('K', 0)].shape[-2:] == (4, 4) else inputs[('K', 0)]  # [B,N,3,3]
+            feats_agg, geom_feat, ray_field = self.pose_geom_encoder(
+                visual_feat=feats_agg,
+                K=K,
+                R=R,
+                t=t
+            )
         if self.novel_view_mode == 'MF':
             feats_agg_last = unpack_cam_feat(packed_feats_agg_last, self.batch_size, self.num_cams)
             feats_agg_next = unpack_cam_feat(packed_feats_agg_next, self.batch_size, self.num_cams)

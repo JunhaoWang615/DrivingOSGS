@@ -7,6 +7,7 @@ model:
   # mode: 'MF' or 'SF'
   novel_view_mode: 'SF'
   use_pose_cond: True
+  use_adaptive: False
 
   num_layers: 18
   weights_init: True

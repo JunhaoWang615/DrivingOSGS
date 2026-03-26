@@ -18,6 +18,8 @@ from pathlib import Path
 from einops import rearrange, repeat
 from typing import Union
 import numpy as np
+import heapq
+import json
 
 from tqdm import tqdm
 
@@ -156,20 +158,36 @@ class DrivingForwardTrainer:
 
         count = 0
 
+        # Keep top-k scenes by PSNR (min-heap of size k)
+        top_k = 2
+        top_scenes = []  # entries: (psnr_value, token, inputs, outputs)
+
         process = tqdm(eval_dataloader)
         for batch_idx, inputs in enumerate(process):
             outputs, _ = model.process_batch(inputs, self.rank)
             
             psnr, ssim, lpips= self.compute_reconstruction_metrics(inputs, outputs)
 
+            # accumulate averages
             avg_reconstruction_metric['psnr'] += psnr   
             avg_reconstruction_metric['ssim'] += ssim
             avg_reconstruction_metric['lpips'] += lpips
             count += 1
 
-            process.set_description(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}")
+            psnr_value = float(psnr)
+            lpips_value = float(lpips)
+            ssim_value = float(ssim)
 
-            print(f"\n{inputs['token'][0]}")
+            # maintain top-k scenes
+            token = inputs['token'][0]
+
+            heapq.heappush(top_scenes, (ssim_value, token, inputs, outputs))
+            if len(top_scenes) > top_k:
+                heapq.heappop(top_scenes)
+
+            process.set_description(f"PSNR: {psnr_value:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}")
+
+            print(f"\n{token}")
             print(f"avg PSNR: {avg_reconstruction_metric['psnr']/count:.4f}, avg SSIM: {avg_reconstruction_metric['ssim']/count:.4f}, avg LPIPS: {avg_reconstruction_metric['lpips']/count:.4f}")
             
         avg_reconstruction_metric['psnr'] /= len(eval_dataloader)
@@ -178,6 +196,45 @@ class DrivingForwardTrainer:
 
         print('Evaluation reconstruction result...\n')
         self.logger.print_perf(avg_reconstruction_metric, 'reconstruction')
+
+        # Save top-k scenes outputs into test_images directory
+        test_images_dir = Path('test_images/ssim')
+        if len(top_scenes) > 0:
+            # sort descending by PSNR
+            top_sorted = sorted(top_scenes, key=lambda x: x[0], reverse=True)
+            for rank_idx, (psnr_value, token, inputs, outputs) in enumerate(top_sorted, start=1):
+                if self.novel_view_mode == 'SF':
+                    frame_id = 1
+                elif self.novel_view_mode == 'MF':
+                    frame_id = 0
+                else:
+                    raise ValueError(f"Invalid novel view mode: {self.novel_view_mode}")
+                                # Save extrinsics for this scene (if present)
+                extrinsics = inputs.get('extrinsics', None)
+                if extrinsics is not None:
+                    try:
+                        if hasattr(extrinsics, 'detach'):
+                            ex_list = extrinsics.detach().cpu().numpy().tolist()
+                        else:
+                            ex_list = np.array(extrinsics).tolist()
+                        dest = test_images_dir / token
+                        dest.mkdir(parents=True, exist_ok=True)
+                        with open(dest / 'extrinsics.json', 'w') as f:
+                            json.dump(ex_list, f)
+                    except Exception as e:
+                        print(f"Failed to save extrinsics for {token}: {e}")
+                for cam in range(self.num_cams):
+                    rgb_gt = inputs[('color', frame_id, 0)][:, cam, ...]
+                    image = outputs[('cam', cam)][('gaussian_color', frame_id, 0)]
+                    # destination folder: test_images/<token>/
+                    dest_base = test_images_dir / token
+                    self.save_image(image, dest_base / f"{cam}.png")
+                    self.save_image(rgb_gt, dest_base / f"{cam}_gt.png")
+                    if self.novel_view_mode == 'SF':
+                        self.save_image(inputs[('color', 0, 0)][:, cam, ...], dest_base / f"{cam}_0_gt.png")
+                    elif self.novel_view_mode == 'MF':
+                        self.save_image(inputs[('color', -1, 0)][:, cam, ...], dest_base / f"{cam}_prev_gt.png")
+                        self.save_image(inputs[('color', 1, 0)][:, cam, ...], dest_base / f"{cam}_next_gt.png")
 
     def save_image(
         self,
@@ -243,6 +300,21 @@ class DrivingForwardTrainer:
                     self.save_image(rgb_gt, Path(self.save_path) / inputs['token'][0] / f"{cam}_gt.png")
                     self.save_image(inputs[('color', -1, 0)][:, cam, ...], Path(self.save_path) / inputs['token'][0] / f"{cam}_prev_gt.png")
                     self.save_image(inputs[('color', 1, 0)][:, cam, ...], Path(self.save_path) / inputs['token'][0] / f"{cam}_next_gt.png")
+        
+        extrinsics = inputs.get('extrinsics', None)
+        if extrinsics is not None:
+            try:
+                if hasattr(extrinsics, 'detach'):
+                    ex_list = extrinsics.detach().cpu().numpy().tolist()
+                else:
+                    ex_list = np.array(extrinsics).tolist()
+                dest = Path(self.save_path) / inputs['token'][0]
+                dest.mkdir(parents=True, exist_ok=True)
+                with open(dest / 'extrinsics.json', 'w') as f:
+                    json.dump(ex_list, f)
+            except Exception as e:
+                print(f"Failed to save extrinsics for {inputs['token'][0]}: {e}")
+        
         psnr /= self.num_cams
         ssim /= self.num_cams
         lpips /= self.num_cams
