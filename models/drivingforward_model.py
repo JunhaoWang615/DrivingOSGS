@@ -151,10 +151,50 @@ class DrivingForwardModel(BaseModel):
         self._dataloaders['eval'] = DataLoader(eval_dataset, **dataloader_opts)
 
     def set_optimizer(self):
-        parameters_to_train = []
-        for v in self.models.values():
-            parameters_to_train += list(v.parameters())
+        # Toggle between two modes:
+        # - train_only_gaussian_heads (bool, default False): freeze everything except gaussian heads
+        # - otherwise: train all model parameters (original behavior)
+        train_only = getattr(self, 'train_only_gaussian_heads', False)
 
+        if train_only:
+            # Freeze all parameters first
+            for m in self.models.values():
+                for p in m.parameters():
+                    p.requires_grad = False
+
+            # Collect only gaussian head level 2 and level 3 parameters to train
+            parameters_to_train = []
+            gs = self.models.get('gs_net', None)
+            if gs is not None:
+                if hasattr(gs, 'gaussian_head_level_2'):
+                    parameters_to_train += list(gs.gaussian_head_level_2.parameters())
+                if hasattr(gs, 'gaussian_head_level_3'):
+                    parameters_to_train += list(gs.gaussian_head_level_3.parameters())
+
+            # Ensure these parameters are set to require gradients
+            for p in parameters_to_train:
+                p.requires_grad = True
+
+            if len(parameters_to_train) == 0:
+                raise RuntimeError("No parameters to train: gaussian heads not found in models['gs_net'].")
+
+        else:
+            # Train all parameters (original behavior)
+            parameters_to_train = []
+            for v in self.models.values():
+                parameters_to_train += list(v.parameters())
+            # Ensure requires_grad is True for all
+            for p in parameters_to_train:
+                p.requires_grad = True
+
+        # Optionally print trainable parameters for verification
+        if getattr(self, 'print_trainable_params', False) and 'gs_net' in self.models:
+            print('Trainable parameters:')
+            for name, param in self.models['gs_net'].named_parameters():
+                if param.requires_grad:
+                    print(name)
+
+        # Create optimizer with the selected parameters
         self.optimizer = optim.Adam(
         parameters_to_train, 
             self.learning_rate
@@ -319,14 +359,21 @@ class DrivingForwardModel(BaseModel):
             outputs[('cam', cam)][('xyz', frame_id, 0)] = depth2pc(outputs[('cam', cam)][('depth', frame_id, 0)], outputs[('cam', cam)][('e2c_extr', frame_id, 0)], inputs[('K', 0)][:, cam, ...])
             valid = outputs[('cam', cam)][('depth', frame_id, 0)] != 0.0
             outputs[('cam', cam)][('pts_valid', frame_id, 0)] = valid.view(bs, -1)
-            rot_maps, scale_maps, opacity_maps, sh_maps = \
-                self.gs_net(inputs[('color', frame_id, 0)][:, cam, ...], outputs[('cam', cam)][('depth', frame_id, 0)], outputs[('cam', cam)][('img_feat', frame_id, 0)])
-            c2w_rotations = rearrange(outputs[('cam', cam)][('c2e_extr', frame_id, 0)][..., :3, :3], "k i j -> k () () () i j")
-            sh_maps = rotate_sh(sh_maps, c2w_rotations[..., None, :, :])
-            outputs[('cam', cam)][('rot_maps', frame_id, 0)] = rot_maps
-            outputs[('cam', cam)][('scale_maps', frame_id, 0)] = scale_maps
-            outputs[('cam', cam)][('opacity_maps', frame_id, 0)] = opacity_maps
-            outputs[('cam', cam)][('sh_maps', frame_id, 0)] = sh_maps
+            final_params = \
+                self.gs_net(inputs[('color', frame_id, 0)][:, cam, ...], outputs[('cam', cam)][('depth', frame_id, 0)], outputs[('cam', cam)][('img_feat', frame_id, 0)], outputs[('cam', cam)][('xyz', frame_id, 0)], valid)
+            # no together
+
+            for i in range(3):
+                level_name = f'level_{i + 1}'
+                outputs[('cam', cam)][('xyz', frame_id, i)] = final_params[level_name]['xyz']
+                outputs[('cam', cam)][('pts_valid', frame_id, i)] = final_params[level_name]['valid'].squeeze(2)
+                c2w_rotations = rearrange(outputs[('cam', cam)][('c2e_extr', frame_id, 0)][..., :3, :3], "k i j -> k () () () i j")
+                sh_maps = final_params[level_name]['sh_map']
+                sh_maps = rotate_sh(sh_maps, c2w_rotations[..., None, :, :])
+                outputs[('cam', cam)][('rot_maps', frame_id, i)] = final_params[level_name]['rot']
+                outputs[('cam', cam)][('scale_maps', frame_id, i)] = final_params[level_name]['scale']
+                outputs[('cam', cam)][('opacity_maps', frame_id, i)] = final_params[level_name]['opacity']
+                outputs[('cam', cam)][('sh_maps', frame_id, i)] = sh_maps
 
             # novel view
             for frame_id in self.frame_ids[1:]:
@@ -340,27 +387,33 @@ class DrivingForwardModel(BaseModel):
                 world_view_transform_list = []
                 full_proj_transform_list = []
                 camera_center_list = []
-                for i in range(bs):
-                    intr = inputs[('K', 0)][:, cam, ...][i,:]
-                    extr = inputs['extrinsics_inv'][:, cam, ...][i,:]
-                    T_i = outputs[('cam', cam)][('cam_T_cam', 0, frame_id)][i,:]
-                    FovX = focal2fov(intr[0, 0], width)
-                    FovY = focal2fov(intr[1, 1], height)
-                    projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, K=intr, h=height, w=width).transpose(0, 1).cuda()
-                    world_view_transform = torch.matmul(T_i, torch.tensor(extr).cuda()).transpose(0, 1)
-                    # full_proj_transform: (E^T K^T) = (K E)^T
-                    full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
-                    camera_center = world_view_transform.inverse()[3, :3] 
-                    FovX_list.append(FovX)
-                    FovY_list.append(FovY)
-                    world_view_transform_list.append(world_view_transform.unsqueeze(0))
-                    full_proj_transform_list.append(full_proj_transform.unsqueeze(0))
-                    camera_center_list.append(camera_center.unsqueeze(0))
-                outputs[('cam', cam)][('FovX', frame_id, 0)] = torch.tensor(FovX_list).cuda()
-                outputs[('cam', cam)][('FovY', frame_id, 0)] = torch.tensor(FovY_list).cuda()
-                outputs[('cam', cam)][('world_view_transform', frame_id, 0)] = torch.cat(world_view_transform_list, dim=0)
-                outputs[('cam', cam)][('full_proj_transform', frame_id, 0)] = torch.cat(full_proj_transform_list, dim=0)
-                outputs[('cam', cam)][('camera_center', frame_id, 0)] = torch.cat(camera_center_list, dim=0)
+                for scale in range(3):
+                    for i in range(bs):
+                        intr_scale = inputs[('K', 0)][:, cam, ...][i,:]/(2**scale)
+                        width_scale = self.width//(2**scale)
+                        height_scale = self.height//(2**scale)
+                        intr_scale = inputs[('K', 0)][:, cam, ...][i,:]
+                        width_scale = self.width
+                        height_scale = self.height
+                        extr = inputs['extrinsics_inv'][:, cam, ...][i,:]
+                        T_i = outputs[('cam', cam)][('cam_T_cam', 0, frame_id)][i,:]
+                        FovX = focal2fov(intr_scale[0, 0], width_scale)
+                        FovY = focal2fov(intr_scale[1, 1], height_scale)
+                        projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, K=intr_scale, h=height_scale, w=width_scale).transpose(0, 1).cuda()
+                        world_view_transform = torch.matmul(T_i, torch.tensor(extr).cuda()).transpose(0, 1)
+                        # full_proj_transform: (E^T K^T) = (K E)^T
+                        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
+                        camera_center = world_view_transform.inverse()[3, :3] 
+                        FovX_list.append(FovX)
+                        FovY_list.append(FovY)
+                        world_view_transform_list.append(world_view_transform.unsqueeze(0))
+                        full_proj_transform_list.append(full_proj_transform.unsqueeze(0))
+                        camera_center_list.append(camera_center.unsqueeze(0))
+                    outputs[('cam', cam)][('FovX', frame_id, scale)] = torch.tensor(FovX_list).cuda()
+                    outputs[('cam', cam)][('FovY', frame_id, scale)] = torch.tensor(FovY_list).cuda()
+                    outputs[('cam', cam)][('world_view_transform', frame_id, scale)] = torch.cat(world_view_transform_list, dim=0)
+                    outputs[('cam', cam)][('full_proj_transform', frame_id, scale)] = torch.cat(full_proj_transform_list, dim=0)
+                    outputs[('cam', cam)][('camera_center', frame_id, scale)] = torch.cat(camera_center_list, dim=0)
     
     def compute_losses(self, inputs, outputs):
         """
@@ -414,12 +467,12 @@ class DrivingForwardModel(BaseModel):
                            mode=self.novel_view_mode)
         elif self.novel_view_mode == 'SF':
             for novel_frame_id in self.frame_ids[1:]:
-                outputs[('cam', cam)][('gaussian_color', novel_frame_id, 0)] = \
-                    pts2render(inputs=inputs, 
+                multi_scale_img = pts2render(inputs=inputs, 
                                outputs=outputs, 
                                cam_num=self.num_cams, 
                                novel_cam=cam,
                                novel_frame_id=novel_frame_id, 
                                bg_color=[1.0, 1.0, 1.0],
                                mode=self.novel_view_mode)
-
+                for scale in range(3):
+                    outputs[('cam', cam)][('gaussian_color', novel_frame_id, scale)] = multi_scale_img[0][scale]

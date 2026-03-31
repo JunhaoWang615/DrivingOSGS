@@ -45,7 +45,7 @@ training:
   
   # optimization
   batch_size: 1
-  num_workers: 1
+  num_workers: 4
   learning_rate: 0.0001
   num_epochs: 2
   scheduler_step_size: 15
@@ -67,6 +67,14 @@ training:
   
   ## focal length scaling
   focal_length_scale: 300
+
+  train_only_gaussian_heads: True
+  print_trainable_params: True
+
+  # adaptive thresholds for Gaussian Network
+  use_adaptive_thresholds: False
+  T32: 0
+  T21: 10000
 
 # Loss hyperparams
 loss:

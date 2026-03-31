@@ -5,6 +5,7 @@ from tqdm import tqdm
 import torch
 import torch.distributed as dist
 from torch import Tensor
+import torch.nn.functional as F
 
 from utils import Logger
 
@@ -144,7 +145,7 @@ class DrivingForwardTrainer:
         model.set_train()
 
     @torch.no_grad()
-    def evaluate(self, model):
+    def evaluate(self, model, scale = 0):
         """
         This function evaluates models on validation dataset of samples with context.
         """
@@ -166,7 +167,7 @@ class DrivingForwardTrainer:
         for batch_idx, inputs in enumerate(process):
             outputs, _ = model.process_batch(inputs, self.rank)
             
-            psnr, ssim, lpips= self.compute_reconstruction_metrics(inputs, outputs)
+            psnr, ssim, lpips= self.compute_reconstruction_metrics(inputs, outputs, scale=scale)
 
             # accumulate averages
             avg_reconstruction_metric['psnr'] += psnr   
@@ -225,7 +226,9 @@ class DrivingForwardTrainer:
                         print(f"Failed to save extrinsics for {token}: {e}")
                 for cam in range(self.num_cams):
                     rgb_gt = inputs[('color', frame_id, 0)][:, cam, ...]
-                    image = outputs[('cam', cam)][('gaussian_color', frame_id, 0)]
+                    # if scale > 0:
+                    #     rgb_gt = F.interpolate(rgb_gt, scale_factor=1.0/(2**scale), mode='bilinear', align_corners=False)
+                    image = outputs[('cam', cam)][('gaussian_color', frame_id, scale)]
                     # destination folder: test_images/<token>/
                     dest_base = test_images_dir / token
                     self.save_image(image, dest_base / f"{cam}.png")
@@ -270,7 +273,7 @@ class DrivingForwardTrainer:
         return rearrange(image, "c h w -> h w c").cpu().numpy()
 
     @torch.no_grad()
-    def compute_reconstruction_metrics(self, inputs, outputs):
+    def compute_reconstruction_metrics(self, inputs, outputs, scale=0):
         """
         This function computes reconstruction metrics.
         """
@@ -285,7 +288,9 @@ class DrivingForwardTrainer:
             raise ValueError(f"Invalid novel view mode: {self.novel_view_mode}")
         for cam in range(self.num_cams):
             rgb_gt = inputs[('color', frame_id, 0)][:, cam, ...]
-            image = outputs[('cam', cam)][('gaussian_color', frame_id, 0)]
+            # if scale > 0:
+            #     rgb_gt = F.interpolate(rgb_gt, scale_factor=1.0/(2**scale), mode='bilinear', align_corners=False)
+            image = outputs[('cam', cam)][('gaussian_color', frame_id, scale)]
             psnr += self.compute_psnr(rgb_gt, image).mean()
             ssim += self.compute_ssim(rgb_gt, image).mean()
             lpips += self.compute_lpips(rgb_gt, image).mean()

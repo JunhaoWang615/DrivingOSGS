@@ -1,5 +1,6 @@
 import torch
 from pytorch3d.transforms import matrix_to_euler_angles 
+import torch.nn.functional as F
 
 from .loss_util import compute_photometric_loss, compute_masked_loss
 from .single_cam_loss import SingleCamLoss
@@ -14,6 +15,8 @@ class MultiCamLoss(SingleCamLoss):
         super(MultiCamLoss, self).__init__(cfg, rank)
 
         self.lpips = LPIPS(net="vgg").cuda(rank)
+
+        self.cnt = 0
     
     def compute_spatio_loss(self, inputs, target_view, cam=None, scale=None, ref_mask=None):
         """
@@ -105,14 +108,20 @@ class MultiCamLoss(SingleCamLoss):
             l2_loss = ((pred - target_view)**2).mean()
             return 1 * l2_loss + 0.05 * lpips_loss
         elif self.novel_view_mode == 'SF':
-            gaussian_loss = 0.0 
-            for frame_id in self.frame_ids[1:]:
-                pred = target_view[('gaussian_color', frame_id, scale)]
-                gt = inputs['color', frame_id, 0][:,cam, ...]        
-                lpips_loss = self.lpips(pred, gt, normalize=True).mean()
-                l2_loss = ((pred - gt)**2).mean()
-                gaussian_loss += 1 * l2_loss + 0.05 * lpips_loss
-            return gaussian_loss / 2
+            multi_scale_gaussian_loss = []
+            for scale_i in range(3):
+                gaussian_loss = 0.0 
+                for frame_id in self.frame_ids[1:]:
+                    pred = target_view[('gaussian_color', frame_id, scale_i)]
+                    gt = inputs['color', frame_id, scale][:,cam, ...]
+                    # if scale_i != scale:
+                    #     gt = F.interpolate(gt, [pred.shape[2], pred.shape[3]], mode='bilinear', align_corners=True)        
+                    lpips_loss = self.lpips(pred, gt, normalize=True).mean()
+                    l2_loss = ((pred - gt)**2).mean()
+                    gaussian_loss += 1 * l2_loss + 0.05 * lpips_loss
+                multi_scale_gaussian_loss.append(gaussian_loss/2)
+            multi_scale_gaussian_loss = torch.stack(multi_scale_gaussian_loss)
+            return multi_scale_gaussian_loss
 
 
     def forward(self, inputs, outputs, cam):        
@@ -142,7 +151,7 @@ class MultiCamLoss(SingleCamLoss):
             cam_loss += self.disparity_smoothness * smooth_loss / (2 ** scale)            
             cam_loss += self.spatio_coeff * spatio_loss + self.spatio_tempo_coeff * spatio_tempo_loss
             if self.gaussian:
-                cam_loss += self.gaussian_coeff * gaussian_loss                            
+                cam_loss += self.gaussian_coeff * gaussian_loss.mean()                          
             cam_loss += self.pose_loss_coeff* pose_loss
             
             ##########################
@@ -152,7 +161,8 @@ class MultiCamLoss(SingleCamLoss):
                 loss_dict['reproj_loss'] = reprojection_loss.item()
                 loss_dict['spatio_loss'] = spatio_loss.item()
                 if self.gaussian:
-                    loss_dict['gaussian_loss'] = gaussian_loss.item()
+                    for i in range(3):
+                        loss_dict[f'gaussian_loss_scale_{i}'] = gaussian_loss[i].item()
                 loss_dict['spatio_tempo_loss'] = spatio_tempo_loss.item()
                 loss_dict['smooth'] = smooth_loss.item()
                 
@@ -160,4 +170,12 @@ class MultiCamLoss(SingleCamLoss):
                 self.get_logs(loss_dict, target_view, cam)                        
         
         cam_loss /= len(self.scales)
+        if self.cnt % 6000 == 0 and cam == 0:
+            print(f"cam {cam} total_loss {cam_loss.item():.4f}, \
+            reproj_loss: {reprojection_loss.item():.4f}, \
+            spatio_loss: {spatio_loss.item():.4f}, \
+            spatio_tempo_loss: {spatio_tempo_loss.item():.4f}, \
+            gaussian_loss_scale_0: {gaussian_loss[0].item() if self.gaussian else 'N/A'}, \
+            gaussian_loss_scale_1: {gaussian_loss[1].item() if self.gaussian else 'N/A'}, \
+            gaussian_loss_scale_2: {gaussian_loss[2].item() if self.gaussian else 'N/A'}")
         return cam_loss, loss_dict
