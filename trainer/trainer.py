@@ -131,11 +131,12 @@ class DrivingForwardTrainer:
         inputs = next(val_iter)
         outputs, _ = model.process_batch(inputs, self.rank)
             
-        psnr, ssim, lpips= self.compute_reconstruction_metrics(inputs, outputs)
+        psnr, ssim, lpips, gaussian_num = self.compute_reconstruction_metrics(inputs, outputs)
 
         avg_reconstruction_metric['psnr'] += psnr   
         avg_reconstruction_metric['ssim'] += ssim
         avg_reconstruction_metric['lpips'] += lpips
+        avg_reconstruction_metric['gaussian_num'] += gaussian_num
 
         print('Validation reconstruction result...\n')
         print(f"\n{inputs['token'][0]}")
@@ -167,12 +168,13 @@ class DrivingForwardTrainer:
         for batch_idx, inputs in enumerate(process):
             outputs, _ = model.process_batch(inputs, self.rank)
             
-            psnr, ssim, lpips= self.compute_reconstruction_metrics(inputs, outputs, scale=scale)
+            psnr, ssim, lpips, gaussian_num = self.compute_reconstruction_metrics(inputs, outputs, scale=scale)
 
             # accumulate averages
             avg_reconstruction_metric['psnr'] += psnr   
             avg_reconstruction_metric['ssim'] += ssim
             avg_reconstruction_metric['lpips'] += lpips
+            avg_reconstruction_metric['gaussian_num'] += gaussian_num
             count += 1
 
             psnr_value = float(psnr)
@@ -186,14 +188,16 @@ class DrivingForwardTrainer:
             if len(top_scenes) > top_k:
                 heapq.heappop(top_scenes)
 
-            process.set_description(f"PSNR: {psnr_value:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}")
+            process.set_description(f"PSNR: {psnr_value:.4f}, SSIM: {ssim:.4f}, LPIPS: {lpips:.4f}, Gaussian Num: {gaussian_num:.2f}")
 
             print(f"\n{token}")
-            print(f"avg PSNR: {avg_reconstruction_metric['psnr']/count:.4f}, avg SSIM: {avg_reconstruction_metric['ssim']/count:.4f}, avg LPIPS: {avg_reconstruction_metric['lpips']/count:.4f}")
+            print(f"avg PSNR: {avg_reconstruction_metric['psnr']/count:.4f}, avg SSIM: {avg_reconstruction_metric['ssim']/count:.4f}, avg LPIPS: {avg_reconstruction_metric['lpips']/count:.4f}, avg Gaussian Num: {avg_reconstruction_metric['gaussian_num']/count:.2f}")
             
         avg_reconstruction_metric['psnr'] /= len(eval_dataloader)
         avg_reconstruction_metric['ssim'] /= len(eval_dataloader)
         avg_reconstruction_metric['lpips'] /= len(eval_dataloader)
+        avg_reconstruction_metric['gaussian_num'] /= len(eval_dataloader)
+
 
         print('Evaluation reconstruction result...\n')
         self.logger.print_perf(avg_reconstruction_metric, 'reconstruction')
@@ -280,6 +284,7 @@ class DrivingForwardTrainer:
         psnr = 0.0
         ssim = 0.0
         lpips = 0.0
+        gaussian_num = 0.0
         if self.novel_view_mode == 'SF':
             frame_id = 1
         elif self.novel_view_mode == 'MF':
@@ -291,12 +296,16 @@ class DrivingForwardTrainer:
             # if scale > 0:
             #     rgb_gt = F.interpolate(rgb_gt, scale_factor=1.0/(2**scale), mode='bilinear', align_corners=False)
             image = outputs[('cam', cam)][('gaussian_color', frame_id, scale)]
+            gaussian_num += outputs[('cam', cam)][('xyz', 0, 3)].shape[1]
             psnr += self.compute_psnr(rgb_gt, image).mean()
             ssim += self.compute_ssim(rgb_gt, image).mean()
             lpips += self.compute_lpips(rgb_gt, image).mean()
+
+            mask_img = outputs[('cam', cam)][('mask_color', 0, 0)]
             if self.save_images:
                 assert self.eval_batch_size == 1
                 if self.novel_view_mode == 'SF':
+                    self.save_image(mask_img, Path(self.save_path) / inputs['token'][0] / f"{cam}_mask.png")
                     self.save_image(image, Path(self.save_path) / inputs['token'][0] / f"{cam}.png")
                     self.save_image(rgb_gt, Path(self.save_path) / inputs['token'][0] / f"{cam}_gt.png")
                     self.save_image(inputs[('color', 0, 0)][:, cam, ...], Path(self.save_path) / inputs['token'][0] / f"{cam}_0_gt.png")
@@ -323,7 +332,8 @@ class DrivingForwardTrainer:
         psnr /= self.num_cams
         ssim /= self.num_cams
         lpips /= self.num_cams
-        return psnr, ssim, lpips
+        gaussian_num /= self.num_cams
+        return psnr, ssim, lpips, gaussian_num
     
     @torch.no_grad()
     def compute_psnr(

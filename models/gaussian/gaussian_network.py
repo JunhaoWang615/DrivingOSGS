@@ -4,6 +4,7 @@ from torch import nn
 from .extractor import UnetExtractor, ResidualBlock
 from einops import rearrange
 import torch.nn.functional as F
+from .hierarchical_gaussian_selector import HierarchicalGaussianSelector
 
 
 class GaussianParamHead(nn.Module):
@@ -87,7 +88,7 @@ class GaussianParamHead(nn.Module):
 
 
 class GaussianNetwork(nn.Module):
-    def __init__(self, rgb_dim=3, depth_dim=1, norm_fn='group'):
+    def __init__(self, rgb_dim=3, depth_dim=1, norm_fn='group', tau = 0, level2_scale = 4.0, level3_scale=16.0):
         """
         Args:
             rgb_dim: RGB 输入通道数
@@ -169,7 +170,7 @@ class GaussianNetwork(nn.Module):
         self.gaussian_head_level_2 = GaussianParamHead(
             in_channels=self.head_dim,
             sh_degree=self.sh_degree,
-            max_scale=self.max_gaussian_scale * 4.0
+            max_scale=self.max_gaussian_scale * level2_scale
         )
         
         # Level 3: 最低分辨率，最大尺度
@@ -177,8 +178,100 @@ class GaussianNetwork(nn.Module):
         self.gaussian_head_level_3 = GaussianParamHead(
             in_channels=self.head_dim,
             sh_degree=self.sh_degree,
-            max_scale=self.max_gaussian_scale * 16.0
+            max_scale=self.max_gaussian_scale * level3_scale
         )
+
+        # Post-processing selector: no learnable parameters.
+        self.hierarchical_selector = HierarchicalGaussianSelector(
+            lambda_i=1,
+            lambda_d=0,
+            tau21=tau,
+            tau32=tau,
+            eps=1e-6,
+        )
+        self.last_selector_results = None
+
+    @staticmethod
+    def _flatten_spatial_tensor(x):
+        # [N, C, H, W] -> [N, H*W, C]
+        n, c, h, w = x.shape
+        return x.reshape(n, c, h * w).transpose(1, 2).contiguous()
+
+    def _build_level_multi_from_masks(self, img, params_l1, params_l2, params_l3, masks):
+        def _select_by_mask(param_dict, mask):
+            # mask: [N, 1, H, W] (bool)
+            selected = {}
+            flat_mask = mask.reshape(mask.shape[0], -1)
+            for k, v in param_dict.items():
+                if not torch.is_tensor(v):
+                    continue
+                if v.dim() == 4 and v.shape[-2:] == mask.shape[-2:]:
+                    v_flat = self._flatten_spatial_tensor(v)
+                    selected[k] = [v_flat[b][flat_mask[b]] for b in range(v.shape[0])]
+            return selected
+
+        sel_l1 = _select_by_mask(params_l1, masks['m1'])
+        sel_l2 = _select_by_mask(params_l2, masks['m2'])
+        sel_l3 = _select_by_mask(params_l3, masks['m3'])
+
+        merge_keys = ['rot', 'scale', 'opacity', 'sh_map', 'xyz']
+        feat_dims = {
+            'rot': 4,
+            'scale': 3,
+            'opacity': 1,
+            'sh_map': 3 * self.d_sh,
+            'xyz': 3,
+        }
+
+        per_batch_concat = {k: [] for k in merge_keys}
+        batch_size = img.shape[0]
+        for b in range(batch_size):
+            for k in merge_keys:
+                parts = []
+                if k in sel_l1:
+                    parts.append(sel_l1[k][b])
+                if k in sel_l2:
+                    parts.append(sel_l2[k][b])
+                if k in sel_l3:
+                    parts.append(sel_l3[k][b])
+
+                if len(parts) == 0:
+                    empty = img.new_zeros((0, feat_dims[k]))
+                    per_batch_concat[k].append(empty)
+                else:
+                    per_batch_concat[k].append(torch.cat(parts, dim=0))
+
+        max_count = 0
+        for b in range(batch_size):
+            max_count = max(max_count, per_batch_concat['rot'][b].shape[0])
+
+        level_multi = {}
+        for k in merge_keys:
+            feat_dim = feat_dims[k]
+            stacked = img.new_zeros((batch_size, max_count, feat_dim))
+            for b in range(batch_size):
+                cnt = per_batch_concat[k][b].shape[0]
+                if cnt > 0:
+                    stacked[b, :cnt] = per_batch_concat[k][b]
+            level_multi[k] = stacked
+
+        level_multi['valid'] = torch.zeros(
+            (batch_size, max_count, 1),
+            dtype=torch.bool,
+            device=img.device,
+        )
+        for b in range(batch_size):
+            cnt = per_batch_concat['rot'][b].shape[0]
+            if cnt > 0:
+                level_multi['valid'][b, :cnt, 0] = True
+
+        level_multi['sh_map'] = rearrange(
+            level_multi['sh_map'],
+            'n g (xyz d_sh) -> n g 1 1 xyz d_sh',
+            xyz=3,
+            d_sh=self.d_sh,
+        )
+        return level_multi
         
 
     def forward(self, img, depth, img_feat, xyz, valid, return_debug_masks=False):
@@ -313,12 +406,39 @@ class GaussianNetwork(nn.Module):
             params_l2['valid'] = valid_level_2
             params_l3['valid'] = valid_level_3
 
+        # Hierarchical hard selection (mask-based selection + bookkeeping).
+        selector_results = self.hierarchical_selector(
+            image=img,
+            depth=depth,
+            gaussians_l1=params_l1,
+            gaussians_l2=params_l2,
+            gaussians_l3=params_l3,
+            valid_mask=params_l1['valid'] if 'valid' in params_l1 else None,
+        )
+        self.last_selector_results = selector_results
+
+        masks = selector_results['aggregation_masks']
+        level_multi = self._build_level_multi_from_masks(
+            img=img,
+            params_l1=params_l1,
+            params_l2=params_l2,
+            params_l3=params_l3,
+            masks=masks,
+        )
+
         # ============================================
         # 层级梯度分配（基于结构复杂度）
         # ============================================
         # no together
-        final_params = {"level_1": params_l1, "level_2": params_l2, "level_3": params_l3}
+        final_params = {
+            "level_1": params_l1,
+            "level_2": params_l2,
+            "level_3": params_l3,
+            "level_multi": level_multi,
+            "masks": masks,  # 包含 m1, m2, m3
+        }
         for scale in ["level_1", "level_2", "level_3"]:
             final_params[scale]['sh_map'] = rearrange(final_params[scale]['sh_map'], "n (xyz d_sh) h w -> n (h w) 1 1 xyz d_sh", xyz=3)
             final_params[scale]['valid'] = final_params[scale]['valid'].bool()
+        final_params['level_multi']['valid'] = final_params['level_multi']['valid'].bool()
         return final_params

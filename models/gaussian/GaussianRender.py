@@ -18,8 +18,7 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
         
     for i in range(bs):
         scale_novel = []
-        for scale in range(3):
-            
+        for scale in range(4):
             xyz_i_valid = []
             # rgb_i_valid = []
             rot_i_valid = []
@@ -29,15 +28,25 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
             if mode == 'SF':
                 frame_id = 0
                 for cam in range(cam_num):
-                    valid_i = outputs[('cam', cam)][('pts_valid', frame_id, scale)][i, :].permute(1, 2, 0).view(-1)
-                    xyz_i = outputs[('cam', cam)][('xyz', frame_id, scale)][i, :, :].permute(1, 2, 0).view(-1, 3)
-                    # rgb_i = inputs[('color', frame_id, scale)][:, cam, ...][i, :, :, :].permute(1, 2, 0).view(-1, 3) # HWC
+                    if scale < 3:
+                        valid_i = outputs[('cam', cam)][('pts_valid', frame_id, scale)][i, :].permute(1, 2, 0).view(-1)
+                        xyz_i = outputs[('cam', cam)][('xyz', frame_id, scale)][i, :, :].permute(1, 2, 0).view(-1, 3)
+                        # rgb_i = inputs[('color', frame_id, scale)][:, cam, ...][i, :, :, :].permute(1, 2, 0).view(-1, 3) # HWC
+                        
+                        rot_i = outputs[('cam', cam)][('rot_maps', frame_id, scale)][i, :, :, :].permute(1, 2, 0).view(-1, 4)
+                        scale_i = outputs[('cam', cam)][('scale_maps', frame_id, scale)][i, :, :, :].permute(1, 2, 0).view(-1, 3)
+                        opacity_i = outputs[('cam', cam)][('opacity_maps', frame_id, scale)][i, :, :, :].permute(1, 2, 0).view(-1, 1)
+                        sh_i = rearrange(outputs[('cam', cam)][('sh_maps', frame_id, scale)][i, :, :, :], "p srf r xyz d_sh -> (p srf r) d_sh xyz").contiguous()
+                    else:
+                        valid_i = outputs[('cam', cam)][('pts_valid', frame_id, scale)][i, :]
+                        xyz_i = outputs[('cam', cam)][('xyz', frame_id, scale)][i, :, :]
+                        # rgb_i = inputs[('color', frame_id, scale)][:, cam, ...][i, :, :, :].permute(1, 2, 0).view(-1, 3) # HWC
+                        
+                        rot_i = outputs[('cam', cam)][('rot_maps', frame_id, scale)][i, :, :]
+                        scale_i = outputs[('cam', cam)][('scale_maps', frame_id, scale)][i, :, :]
+                        opacity_i = outputs[('cam', cam)][('opacity_maps', frame_id, scale)][i, :, :]
+                        sh_i = rearrange(outputs[('cam', cam)][('sh_maps', frame_id, scale)][i, :, :, :], "p srf r xyz d_sh -> (p srf r) d_sh xyz").contiguous()
                     
-                    rot_i = outputs[('cam', cam)][('rot_maps', frame_id, scale)][i, :, :, :].permute(1, 2, 0).view(-1, 4)
-                    scale_i = outputs[('cam', cam)][('scale_maps', frame_id, scale)][i, :, :, :].permute(1, 2, 0).view(-1, 3)
-                    opacity_i = outputs[('cam', cam)][('opacity_maps', frame_id, scale)][i, :, :, :].permute(1, 2, 0).view(-1, 1)
-                    sh_i = rearrange(outputs[('cam', cam)][('sh_maps', frame_id, scale)][i, :, :, :], "p srf r xyz d_sh -> (p srf r) d_sh xyz").contiguous()
-
                     xyz_i_valid.append(xyz_i[valid_i].view(-1, 3))
                     # rgb_i_valid.append(rgb_i[valid_i].view(-1, 3))
                     rot_i_valid.append(rot_i[valid_i].view(-1, 4))
@@ -72,18 +81,16 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
             opacity_i = torch.concat(opacity_i_valid, dim=0)
             sh_i = torch.concat(sh_i_valid, dim=0)
 
-            novel_FovX_i = outputs[('cam', novel_cam)][('FovX', novel_frame_id, scale)][i]
-            novel_FovY_i = outputs[('cam', novel_cam)][('FovY', novel_frame_id, scale)][i]
-            novel_world_view_transform_i = outputs[('cam', novel_cam)][('world_view_transform', novel_frame_id, scale)][i]
-            novel_function_proj_transform_i = outputs[('cam', novel_cam)][('full_proj_transform', novel_frame_id, scale)][i]
-            novel_camera_center_i = outputs[('cam', novel_cam)][('camera_center', novel_frame_id, scale)][i]
+            novel_FovX_i = outputs[('cam', novel_cam)][('FovX', novel_frame_id, 0)][i]
+            novel_FovY_i = outputs[('cam', novel_cam)][('FovY', novel_frame_id, 0)][i]
+            novel_world_view_transform_i = outputs[('cam', novel_cam)][('world_view_transform', novel_frame_id, 0)][i]
+            novel_function_proj_transform_i = outputs[('cam', novel_cam)][('full_proj_transform', novel_frame_id, 0)][i]
+            novel_camera_center_i = outputs[('cam', novel_cam)][('camera_center', novel_frame_id, 0)][i]
 
-            scale_render = scale
-            scale_render = 0
             render_novel_i = render(novel_FovX=novel_FovX_i,
                                     novel_FovY=novel_FovY_i,
-                                    novel_height=height//(2**scale_render),
-                                    novel_width=width//(2**scale_render),
+                                    novel_height=height,
+                                    novel_width=width,
                                     novel_world_view_transform=novel_world_view_transform_i,
                                     novel_full_proj_transform=novel_function_proj_transform_i,
                                     novel_camera_center=novel_camera_center_i,

@@ -69,7 +69,7 @@ class DrivingForwardModel(BaseModel):
         return DepthNetwork(cfg).cuda()
 
     def set_gaussiannet(self, cfg):
-        return GaussianNetwork(rgb_dim=3, depth_dim=1).cuda()
+        return GaussianNetwork(rgb_dim=3, depth_dim=1, tau=self.tau, level2_scale=self.level2_scale, level3_scale=self.level3_scale).cuda()
 
     def prepare_dataset(self, cfg, rank):
         if rank == 0:
@@ -363,8 +363,30 @@ class DrivingForwardModel(BaseModel):
                 self.gs_net(inputs[('color', frame_id, 0)][:, cam, ...], outputs[('cam', cam)][('depth', frame_id, 0)], outputs[('cam', cam)][('img_feat', frame_id, 0)], outputs[('cam', cam)][('xyz', frame_id, 0)], valid)
             # no together
 
-            for i in range(3):
+            # 合成3个mask为一个彩色图像，每个mask用不同颜色表示
+            # final_params['masks'] 包含 'm1','m2','m3'，分辨率分别为 128x256, 64x128, 32x64
+            masks = final_params['masks']  # m1, m2, m3
+            # 将 m2, m3 上采样到 m1 的尺寸，然后按通道堆叠为 RGB（m1->R, m2->G, m3->B）
+            m1 = masks['m1']  # [B,1,H1,W1]
+            m2 = masks['m2']  # [B,1,H2,W2]
+            m3 = masks['m3']  # [B,1,H3,W3]
+            target_size = m1.shape[-2:]
+            # cast to float before upsampling (interpolate doesn't support Bool)
+            m1_f = m1.float()
+            m2_f = m2.float()
+            m3_f = m3.float()
+            m2_up = F.interpolate(m2_f, size=target_size, mode='bilinear', align_corners=False)
+            m3_up = F.interpolate(m3_f, size=target_size, mode='bilinear', align_corners=False)
+            color_mask = torch.cat([m1_f, m2_up, m3_up], dim=1)  # [B,3,H,W]
+            color_mask = torch.clamp(color_mask, 0.0, 1.0)
+            # 保存原始 masks 同时导出彩色合成结果到 outputs 以便后续使用/可视化
+            outputs[('cam', cam)][('masks', frame_id, 0)] = masks
+            outputs[('cam', cam)][('mask_color', frame_id, 0)] = color_mask
+ 
+            for i in range(4):
                 level_name = f'level_{i + 1}'
+                if i == 3:
+                    level_name = 'level_multi'
                 outputs[('cam', cam)][('xyz', frame_id, i)] = final_params[level_name]['xyz']
                 outputs[('cam', cam)][('pts_valid', frame_id, i)] = final_params[level_name]['valid'].squeeze(2)
                 c2w_rotations = rearrange(outputs[('cam', cam)][('c2e_extr', frame_id, 0)][..., :3, :3], "k i j -> k () () () i j")
@@ -374,7 +396,7 @@ class DrivingForwardModel(BaseModel):
                 outputs[('cam', cam)][('scale_maps', frame_id, i)] = final_params[level_name]['scale']
                 outputs[('cam', cam)][('opacity_maps', frame_id, i)] = final_params[level_name]['opacity']
                 outputs[('cam', cam)][('sh_maps', frame_id, i)] = sh_maps
-
+            
             # novel view
             for frame_id in self.frame_ids[1:]:
                 outputs[('cam', cam)][('e2c_extr', frame_id, 0)] = \
@@ -387,33 +409,29 @@ class DrivingForwardModel(BaseModel):
                 world_view_transform_list = []
                 full_proj_transform_list = []
                 camera_center_list = []
-                for scale in range(3):
-                    for i in range(bs):
-                        intr_scale = inputs[('K', 0)][:, cam, ...][i,:]/(2**scale)
-                        width_scale = self.width//(2**scale)
-                        height_scale = self.height//(2**scale)
-                        intr_scale = inputs[('K', 0)][:, cam, ...][i,:]
-                        width_scale = self.width
-                        height_scale = self.height
-                        extr = inputs['extrinsics_inv'][:, cam, ...][i,:]
-                        T_i = outputs[('cam', cam)][('cam_T_cam', 0, frame_id)][i,:]
-                        FovX = focal2fov(intr_scale[0, 0], width_scale)
-                        FovY = focal2fov(intr_scale[1, 1], height_scale)
-                        projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, K=intr_scale, h=height_scale, w=width_scale).transpose(0, 1).cuda()
-                        world_view_transform = torch.matmul(T_i, torch.tensor(extr).cuda()).transpose(0, 1)
-                        # full_proj_transform: (E^T K^T) = (K E)^T
-                        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
-                        camera_center = world_view_transform.inverse()[3, :3] 
-                        FovX_list.append(FovX)
-                        FovY_list.append(FovY)
-                        world_view_transform_list.append(world_view_transform.unsqueeze(0))
-                        full_proj_transform_list.append(full_proj_transform.unsqueeze(0))
-                        camera_center_list.append(camera_center.unsqueeze(0))
-                    outputs[('cam', cam)][('FovX', frame_id, scale)] = torch.tensor(FovX_list).cuda()
-                    outputs[('cam', cam)][('FovY', frame_id, scale)] = torch.tensor(FovY_list).cuda()
-                    outputs[('cam', cam)][('world_view_transform', frame_id, scale)] = torch.cat(world_view_transform_list, dim=0)
-                    outputs[('cam', cam)][('full_proj_transform', frame_id, scale)] = torch.cat(full_proj_transform_list, dim=0)
-                    outputs[('cam', cam)][('camera_center', frame_id, scale)] = torch.cat(camera_center_list, dim=0)
+                for i in range(bs):
+                    intr = inputs[('K', 0)][:, cam, ...][i,:]
+                    width = self.width
+                    height = self.height
+                    extr = inputs['extrinsics_inv'][:, cam, ...][i,:]
+                    T_i = outputs[('cam', cam)][('cam_T_cam', 0, frame_id)][i,:]
+                    FovX = focal2fov(intr[0, 0], width)
+                    FovY = focal2fov(intr[1, 1], height)
+                    projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, K=intr, h=height, w=width).transpose(0, 1).cuda()
+                    world_view_transform = torch.matmul(T_i, torch.tensor(extr).cuda()).transpose(0, 1)
+                    # full_proj_transform: (E^T K^T) = (K E)^T
+                    full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
+                    camera_center = world_view_transform.inverse()[3, :3] 
+                    FovX_list.append(FovX)
+                    FovY_list.append(FovY)
+                    world_view_transform_list.append(world_view_transform.unsqueeze(0))
+                    full_proj_transform_list.append(full_proj_transform.unsqueeze(0))
+                    camera_center_list.append(camera_center.unsqueeze(0))
+                outputs[('cam', cam)][('FovX', frame_id, 0)] = torch.tensor(FovX_list).cuda()
+                outputs[('cam', cam)][('FovY', frame_id, 0)] = torch.tensor(FovY_list).cuda()
+                outputs[('cam', cam)][('world_view_transform', frame_id, 0)] = torch.cat(world_view_transform_list, dim=0)
+                outputs[('cam', cam)][('full_proj_transform', frame_id, 0)] = torch.cat(full_proj_transform_list, dim=0)
+                outputs[('cam', cam)][('camera_center', frame_id, 0)] = torch.cat(camera_center_list, dim=0)
     
     def compute_losses(self, inputs, outputs):
         """
@@ -474,5 +492,5 @@ class DrivingForwardModel(BaseModel):
                                novel_frame_id=novel_frame_id, 
                                bg_color=[1.0, 1.0, 1.0],
                                mode=self.novel_view_mode)
-                for scale in range(3):
+                for scale in range(4):
                     outputs[('cam', cam)][('gaussian_color', novel_frame_id, scale)] = multi_scale_img[0][scale]

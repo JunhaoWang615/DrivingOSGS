@@ -109,7 +109,7 @@ class MultiCamLoss(SingleCamLoss):
             return 1 * l2_loss + 0.05 * lpips_loss
         elif self.novel_view_mode == 'SF':
             multi_scale_gaussian_loss = []
-            for scale_i in range(3):
+            for scale_i in range(4):
                 gaussian_loss = 0.0 
                 for frame_id in self.frame_ids[1:]:
                     pred = target_view[('gaussian_color', frame_id, scale_i)]
@@ -118,7 +118,7 @@ class MultiCamLoss(SingleCamLoss):
                     #     gt = F.interpolate(gt, [pred.shape[2], pred.shape[3]], mode='bilinear', align_corners=True)        
                     lpips_loss = self.lpips(pred, gt, normalize=True).mean()
                     l2_loss = ((pred - gt)**2).mean()
-                    gaussian_loss += 1 * l2_loss + 0.05 * lpips_loss
+                    gaussian_loss += 1 * l2_loss + 1 * lpips_loss
                 multi_scale_gaussian_loss.append(gaussian_loss/2)
             multi_scale_gaussian_loss = torch.stack(multi_scale_gaussian_loss)
             return multi_scale_gaussian_loss
@@ -161,7 +161,7 @@ class MultiCamLoss(SingleCamLoss):
                 loss_dict['reproj_loss'] = reprojection_loss.item()
                 loss_dict['spatio_loss'] = spatio_loss.item()
                 if self.gaussian:
-                    for i in range(3):
+                    for i in range(4):
                         loss_dict[f'gaussian_loss_scale_{i}'] = gaussian_loss[i].item()
                 loss_dict['spatio_tempo_loss'] = spatio_tempo_loss.item()
                 loss_dict['smooth'] = smooth_loss.item()
@@ -177,5 +177,6 @@ class MultiCamLoss(SingleCamLoss):
             spatio_tempo_loss: {spatio_tempo_loss.item():.4f}, \
             gaussian_loss_scale_0: {gaussian_loss[0].item() if self.gaussian else 'N/A'}, \
             gaussian_loss_scale_1: {gaussian_loss[1].item() if self.gaussian else 'N/A'}, \
-            gaussian_loss_scale_2: {gaussian_loss[2].item() if self.gaussian else 'N/A'}")
+            gaussian_loss_scale_2: {gaussian_loss[2].item() if self.gaussian else 'N/A'}, \
+            gaussian_loss_scale_3: {gaussian_loss[3].item() if self.gaussian else 'N/A'}")
         return cam_loss, loss_dict
