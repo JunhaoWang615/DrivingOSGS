@@ -22,7 +22,7 @@ def test(cfg):
     print("Evaluating reconstruction")
     model = DrivingForwardModel(cfg, 0)
     trainer = DrivingForwardTrainer(cfg, 0, use_tb = False)
-    trainer.evaluate(model, scale=0)
+    trainer.evaluate(model, scale=3)
 
 if __name__ == '__main__':
     args = parse_args()

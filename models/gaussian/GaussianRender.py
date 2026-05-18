@@ -2,6 +2,7 @@
 import torch
 from .gaussian_renderer import render
 from einops import rearrange
+import time
 
 left_cam_dict = {2:0, 0:1, 4:2, 1:3, 5:4, 3:5}
 right_cam_dict = {0:2, 1:0, 2:4, 3:1, 4:5, 5:3}
@@ -18,7 +19,11 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
         
     for i in range(bs):
         scale_novel = []
+        # import pdb; pdb.set_trace()
         for scale in range(4):
+            if scale != 3:
+                scale_novel.append(torch.zeros(1, 3, height, width).to(inputs[('color', 0, 0)].device))
+                continue
             xyz_i_valid = []
             # rgb_i_valid = []
             rot_i_valid = []
@@ -87,6 +92,7 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
             novel_function_proj_transform_i = outputs[('cam', novel_cam)][('full_proj_transform', novel_frame_id, 0)][i]
             novel_camera_center_i = outputs[('cam', novel_cam)][('camera_center', novel_frame_id, 0)][i]
 
+            start_time = time.time()
             render_novel_i = render(novel_FovX=novel_FovX_i,
                                     novel_FovY=novel_FovY_i,
                                     novel_height=height,
@@ -101,7 +107,9 @@ def pts2render(inputs, outputs, cam_num, novel_cam, novel_frame_id, bg_color, mo
                                     opacity=opacity_i, 
                                     shs=sh_i, 
                                     bg_color=bg_color)
+            end_time = time.time()
+            render_time = end_time - start_time
+            outputs[('cam', novel_cam)][('render_time', novel_frame_id, scale)] = render_time
             scale_novel.append(render_novel_i.unsqueeze(0))
         render_novel_list.append(scale_novel)
-
     return render_novel_list

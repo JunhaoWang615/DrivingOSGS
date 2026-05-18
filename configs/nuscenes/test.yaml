@@ -5,9 +5,7 @@ ddp:
   
 model:
   # mode: 'MF' or 'SF'
-  novel_view_mode: 'SF'
-  use_pose_cond: True
-  use_adaptive: False
+  novel_view_mode: 'MF'
 
   num_layers: 18
   weights_init: True
@@ -38,14 +36,14 @@ data:
 
 training:
   # basic
-  height: 128
-  width: 256
+  height: 352
+  width: 640
   scales: [0] 
   frame_ids: [0, -1, 1]
   
   # optimization
   batch_size: 1
-  num_workers: 4
+  num_workers: 1
   learning_rate: 0.0001
   num_epochs: 2
   scheduler_step_size: 15
@@ -68,18 +66,12 @@ training:
   ## focal length scaling
   focal_length_scale: 300
 
-  train_only_gaussian_heads: True
-  print_trainable_params: True
-
-  # adaptive thresholds for Gaussian Network
-  tau: 0.05
-
 # Loss hyperparams
 loss:
   disparity_smoothness: 0.001
   spatio_coeff: 0.03
   spatio_tempo_coeff: 0.1
-  gaussian_coeff: 0.1
+  gaussian_coeff: 0.01
   pose_loss_coeff: 0.0
   
 eval:
@@ -87,12 +79,12 @@ eval:
   eval_num_workers: 4
   eval_min_depth: 0
   eval_max_depth: 80
-  eval_visualize: True
-  save_images: True
+  eval_visualize: False
+  save_images: False
   save_path: './results/images'
   
 load:
-  pretrain: True
+  pretrain: False
   models_to_load: ['depth_net', 'gs_net']
   load_dir: ./model_weight/weights_SF
   

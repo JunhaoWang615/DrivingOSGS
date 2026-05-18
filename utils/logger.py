@@ -270,6 +270,6 @@ class Logger:
         """
         perf = ' '*3 + scale
         for k, v in loss.items():
-            perf += ' | ' + str(k) + f': {v:.3f}'
+            perf += ' | ' + str(k) + f': {v:.8f}'
         print(perf)
             

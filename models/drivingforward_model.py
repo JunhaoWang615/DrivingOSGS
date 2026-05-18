@@ -69,7 +69,7 @@ class DrivingForwardModel(BaseModel):
         return DepthNetwork(cfg).cuda()
 
     def set_gaussiannet(self, cfg):
-        return GaussianNetwork(rgb_dim=3, depth_dim=1, tau=self.tau, level2_scale=self.level2_scale, level3_scale=self.level3_scale).cuda()
+        return GaussianNetwork(rgb_dim=3, depth_dim=1, tau=self.tau).cuda()
 
     def prepare_dataset(self, cfg, rank):
         if rank == 0:
@@ -409,12 +409,17 @@ class DrivingForwardModel(BaseModel):
                 world_view_transform_list = []
                 full_proj_transform_list = []
                 camera_center_list = []
+                camf2world_list = []
                 for i in range(bs):
                     intr = inputs[('K', 0)][:, cam, ...][i,:]
                     width = self.width
                     height = self.height
                     extr = inputs['extrinsics_inv'][:, cam, ...][i,:]
                     T_i = outputs[('cam', cam)][('cam_T_cam', 0, frame_id)][i,:]
+                    world2camf = T_i.matmul(extr)
+                    camf2world = torch.inverse(world2camf) 
+
+
                     FovX = focal2fov(intr[0, 0], width)
                     FovY = focal2fov(intr[1, 1], height)
                     projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, K=intr, h=height, w=width).transpose(0, 1).cuda()
@@ -427,12 +432,14 @@ class DrivingForwardModel(BaseModel):
                     world_view_transform_list.append(world_view_transform.unsqueeze(0))
                     full_proj_transform_list.append(full_proj_transform.unsqueeze(0))
                     camera_center_list.append(camera_center.unsqueeze(0))
+                    camf2world_list.append(camf2world.unsqueeze(0))
+
                 outputs[('cam', cam)][('FovX', frame_id, 0)] = torch.tensor(FovX_list).cuda()
                 outputs[('cam', cam)][('FovY', frame_id, 0)] = torch.tensor(FovY_list).cuda()
                 outputs[('cam', cam)][('world_view_transform', frame_id, 0)] = torch.cat(world_view_transform_list, dim=0)
                 outputs[('cam', cam)][('full_proj_transform', frame_id, 0)] = torch.cat(full_proj_transform_list, dim=0)
                 outputs[('cam', cam)][('camera_center', frame_id, 0)] = torch.cat(camera_center_list, dim=0)
-    
+                outputs[('cam', cam)][('camf2world', frame_id, 0)] = torch.cat(camf2world_list, dim=0)
     def compute_losses(self, inputs, outputs):
         """
         This function computes losses.

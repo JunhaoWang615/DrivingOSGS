@@ -88,7 +88,7 @@ class GaussianParamHead(nn.Module):
 
 
 class GaussianNetwork(nn.Module):
-    def __init__(self, rgb_dim=3, depth_dim=1, norm_fn='group', tau = 0, level2_scale = 4.0, level3_scale=16.0):
+    def __init__(self, rgb_dim=3, depth_dim=1, norm_fn='group', tau = 0):
         """
         Args:
             rgb_dim: RGB 输入通道数
@@ -170,7 +170,7 @@ class GaussianNetwork(nn.Module):
         self.gaussian_head_level_2 = GaussianParamHead(
             in_channels=self.head_dim,
             sh_degree=self.sh_degree,
-            max_scale=self.max_gaussian_scale * level2_scale
+            max_scale=self.max_gaussian_scale * 6
         )
         
         # Level 3: 最低分辨率，最大尺度
@@ -178,13 +178,13 @@ class GaussianNetwork(nn.Module):
         self.gaussian_head_level_3 = GaussianParamHead(
             in_channels=self.head_dim,
             sh_degree=self.sh_degree,
-            max_scale=self.max_gaussian_scale * level3_scale
+            max_scale=self.max_gaussian_scale * 16
         )
 
         # Post-processing selector: no learnable parameters.
         self.hierarchical_selector = HierarchicalGaussianSelector(
-            lambda_i=1,
-            lambda_d=0,
+            lambda_i=0.5,
+            lambda_d=0.5,
             tau21=tau,
             tau32=tau,
             eps=1e-6,
@@ -416,7 +416,7 @@ class GaussianNetwork(nn.Module):
             valid_mask=params_l1['valid'] if 'valid' in params_l1 else None,
         )
         self.last_selector_results = selector_results
-
+        import pdb; pdb.set_trace()
         masks = selector_results['aggregation_masks']
         level_multi = self._build_level_multi_from_masks(
             img=img,
@@ -425,7 +425,7 @@ class GaussianNetwork(nn.Module):
             params_l3=params_l3,
             masks=masks,
         )
-
+# import math; xx =torch.log(1.0 + selector_results['complexity']['c1'] * (math.e - 1.0)) ** 0.8; import torch; import torchvision.utils as vutils; vutils.save_image(xx, "test_img_block/complexity.png", normalize=True)
         # ============================================
         # 层级梯度分配（基于结构复杂度）
         # ============================================
