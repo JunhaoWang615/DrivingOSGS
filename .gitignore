@@ -9,3 +9,11 @@ results
 weights_SF
 weights_MF
 *.pyc
+input_data/
+test_img_block/
+model_weight/
+outlog/
+paper_figures/
+test_images/
+results_debug/
+external/

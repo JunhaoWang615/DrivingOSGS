@@ -21,8 +21,8 @@ class DepthNetwork(nn.Module):
         if self.use_pose_cond and self.novel_view_mode == 'SF':
             self.pose_geom_encoder = PoseGeometricConditionEncoder(
                 feat_dim=self.fusion_feat_in_dim,
-                image_height=128,
-                image_width=256,
+                image_height=self.height,
+                image_width=self.width,
                 num_freqs=6
             )
         # feature encoder        

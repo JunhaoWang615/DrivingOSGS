@@ -35,6 +35,7 @@ class DrivingForwardTrainer:
     """
     def __init__(self, cfg, rank, use_tb=True):
         self.read_config(cfg)
+        self.save_model = getattr(self, 'save_model', True)
         self.rank = rank        
         if rank == 0:
             self.logger = Logger(cfg, use_tb)
@@ -63,7 +64,7 @@ class DrivingForwardTrainer:
             self.train(model, train_dataloader, start_time)
             
             # save model after each epoch using rank 0 gpu 
-            if self.rank == 0:
+            if self.rank == 0 and self.save_model:
                 model.save_model(self.epoch)
                 print('-'*110) 
                 

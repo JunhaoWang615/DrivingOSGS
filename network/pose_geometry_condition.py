@@ -99,7 +99,7 @@ class GeometryEncoder(nn.Module):
         x = self.stage1(x)
         x = self.stage2(x)
         x = self.stage3(x)
-        x = x.view(B, N, 256, 16, 32)
+        x = x.view(B, N, 256, H // 8, W // 8)
         return x
 
 

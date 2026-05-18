@@ -26,7 +26,7 @@ model:
 
 data:
   data_path: '/mnt/data/junhaow/nuScenes_oringin/trainval/'
-  log_dir: './results/'
+  log_dir: './results_debug/'
   dataset: 'nuscenes'
   back_context: 1
   forward_context: 1
@@ -49,6 +49,7 @@ training:
   learning_rate: 0.0001
   num_epochs: 2
   scheduler_step_size: 15
+  save_model: False
 
   # model / loss setting
   ## depth range
@@ -82,14 +83,14 @@ eval:
   eval_min_depth: 0
   eval_max_depth: 80
   eval_visualize: True
-  save_images: True
-  save_path: './results/images'
+  save_images: False
+  save_path: './results_debug/images'
   
 load:
   pretrain: True
   models_to_load: ['depth_net', 'gs_net']
   load_dir: ./model_weight/weights_SF
-  
+
 logging:
   early_phase: 5000
   log_frequency: 1000
