@@ -72,7 +72,7 @@ training:
   print_trainable_params: True
 
   # adaptive thresholds for Gaussian Network
-  tau: 0.05
+  tau: 0
 
 # Loss hyperparams
 loss:

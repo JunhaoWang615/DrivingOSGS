@@ -416,7 +416,6 @@ class GaussianNetwork(nn.Module):
             valid_mask=params_l1['valid'] if 'valid' in params_l1 else None,
         )
         self.last_selector_results = selector_results
-        import pdb; pdb.set_trace()
         masks = selector_results['aggregation_masks']
         level_multi = self._build_level_multi_from_masks(
             img=img,

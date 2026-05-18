@@ -131,7 +131,7 @@ class DrivingForwardTrainer:
         inputs = next(val_iter)
         outputs, _ = model.process_batch(inputs, self.rank)
             
-        psnr, ssim, lpips, gaussian_num, render_time = self.compute_reconstruction_metrics(inputs, outputs)
+        psnr, ssim, lpips, gaussian_num, render_time = self.compute_reconstruction_metrics(inputs, outputs, scale=0, eval_flag=False)
 
         avg_reconstruction_metric['psnr'] += psnr   
         avg_reconstruction_metric['ssim'] += ssim
@@ -286,7 +286,7 @@ class DrivingForwardTrainer:
         return rearrange(image, "c h w -> h w c").cpu().numpy()
 
     @torch.no_grad()
-    def compute_reconstruction_metrics(self, inputs, outputs, scale=0):
+    def compute_reconstruction_metrics(self, inputs, outputs, scale=0, eval_flag=True):
         """
         This function computes reconstruction metrics.
         """
@@ -309,7 +309,10 @@ class DrivingForwardTrainer:
             #     rgb_gt = F.interpolate(rgb_gt, scale_factor=1.0/(2**scale), mode='bilinear', align_corners=False)
             image = outputs[('cam', cam)][('gaussian_color', frame_id, scale)]
             gaussian_num += outputs[('cam', cam)][('xyz', 0, 3)].shape[1]
-            render_time += outputs[('cam', cam)][('render_time', -1, scale)]
+            if eval_flag:
+                render_time += outputs[('cam', cam)][('render_time', -1, scale)]
+            else:
+                render_time = 0
             psnr += self.compute_psnr(rgb_gt, image).mean()
             ssim += self.compute_ssim(rgb_gt, image).mean()
             lpips += self.compute_lpips(rgb_gt, image).mean()

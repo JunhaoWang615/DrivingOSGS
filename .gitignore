@@ -17,3 +17,4 @@ input_data/*
 outlog/*
 external/*
 paper_figures/*
+results_debug/
