@@ -6,7 +6,7 @@ ddp:
 model:
   # mode: 'MF' or 'SF'
   novel_view_mode: 'SF'
-  use_pose_cond: True
+  use_pose_cond: False
   use_adaptive: False
 
   num_layers: 18
@@ -38,8 +38,8 @@ data:
 
 training:
   # basic
-  height: 352
-  width: 640
+  height: 128
+  width: 256
   scales: [0] 
   frame_ids: [0, -1, 1]
   
